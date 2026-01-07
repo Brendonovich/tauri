@@ -235,13 +235,21 @@ pub fn bundle_project(settings: &Settings) -> crate::Result<Vec<PathBuf>> {
   // Sharun has completed processing with stripping enabled
   // Restore original unstripped versions of all sidecar binaries to preserve byte-equivalence
   // (Main binary stays stripped since it's a standard Rust executable)
+  //
+  // Sharun's directory structure:
+  // - /bin/ contains hardlinks to the sharun binary (for argv[0] detection)
+  // - /shared/bin/ contains the actual binary files that sharun executes
+  // We must restore to /shared/bin/ where the real binaries live
   if !sidecars_to_preserve.is_empty() {
-    let bin_dir = app_dir_path.join("bin");
+    let shared_bin_dir = app_dir_path.join("shared/bin");
 
-    log::info!("Looking for stripped sidecars in: {}", bin_dir.display());
+    log::info!(
+      "Looking for stripped sidecars in: {}",
+      shared_bin_dir.display()
+    );
 
     for (binary_name, source_path) in sidecars_to_preserve {
-      let dest_path = bin_dir.join(&binary_name);
+      let dest_path = shared_bin_dir.join(&binary_name);
 
       if dest_path.exists() {
         log::info!(
