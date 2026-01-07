@@ -151,10 +151,12 @@ pub fn bundle_project(settings: &Settings) -> crate::Result<Vec<PathBuf>> {
     "".to_string()
   };
 
-  // Build map of all sidecar binaries to preserve unstripped
-  // This ensures byte-equivalence for binaries with appended data (e.g., Bun-compiled executables)
+  // Build map of all sidecar binaries that should bypass sharun processing.
+  // Sharun uses userland-execve which doesn't preserve appended ELF data,
+  // so sidecars with appended data (e.g., Bun-compiled executables) must be
+  // copied directly without going through lib4bin/sharun.
   // Key: binary_name, Value: original_source_path
-  let mut sidecars_to_preserve: HashMap<String, PathBuf> = HashMap::new();
+  let mut sidecars: HashMap<String, PathBuf> = HashMap::new();
 
   for src in settings.external_binaries() {
     let src = src?;
@@ -166,24 +168,21 @@ pub fn bundle_project(settings: &Settings) -> crate::Result<Vec<PathBuf>> {
     // Remove target triple suffix (same logic as copy_binaries)
     let binary_name = src_filename.replace(&format!("-{}", settings.target()), "");
 
-    sidecars_to_preserve.insert(binary_name.clone(), src.to_path_buf());
+    sidecars.insert(binary_name.clone(), src.to_path_buf());
   }
 
-  if !sidecars_to_preserve.is_empty() {
-    for (name, path) in &sidecars_to_preserve {
+  if !sidecars.is_empty() {
+    for (name, path) in &sidecars {
       log::info!(
-        "Will preserve unstripped sidecar: {} (source: {})",
+        "Sidecar will bypass sharun (preserves appended data): {} (source: {})",
         name,
         path.display()
       );
     }
   }
 
-  let bins = settings.copy_binaries(&app_dir_path.join("usr/bin/"))?;
-  let bins = bins
-    .iter()
-    .map(|b| format!(" \"{}\"", b.to_string_lossy()))
-    .collect::<String>();
+  // Don't copy sidecars to usr/bin - they'll be added directly to shared/bin later
+  // to bypass sharun's userland-execve which doesn't preserve appended ELF data
 
   let xvfb = if which::which("xvfb-run").is_ok() {
     "xvfb-run -a -- "
@@ -232,53 +231,67 @@ pub fn bundle_project(settings: &Settings) -> crate::Result<Vec<PathBuf>> {
     .output_ok()
     .context("Failed to generate library path for AppDir.")?;
 
-  // Sharun has completed processing with stripping enabled
-  // Restore original unstripped versions of all sidecar binaries to preserve byte-equivalence
-  // (Main binary stays stripped since it's a standard Rust executable)
+  // Copy sidecar binaries directly to shared/bin/, bypassing sharun's processing.
+  // Sharun uses userland-execve which doesn't preserve appended ELF data, so sidecars
+  // with appended data (e.g., Bun-compiled executables) must be executed directly.
   //
   // Sharun's directory structure:
   // - /bin/ contains hardlinks to the sharun binary (for argv[0] detection)
   // - /shared/bin/ contains the actual binary files that sharun executes
-  // We must restore to /shared/bin/ where the real binaries live
-  if !sidecars_to_preserve.is_empty() {
+  //
+  // For sidecars, we copy directly to shared/bin/ and create a hardlink in bin/
+  // pointing to the actual sidecar (not to sharun), so they execute natively.
+  if !sidecars.is_empty() {
     let shared_bin_dir = app_dir_path.join("shared/bin");
+    let bin_dir = app_dir_path.join("bin");
 
-    log::info!(
-      "Looking for stripped sidecars in: {}",
-      shared_bin_dir.display()
-    );
+    fs::create_dir_all(&shared_bin_dir)?;
+    fs::create_dir_all(&bin_dir)?;
 
-    for (binary_name, source_path) in sidecars_to_preserve {
-      let dest_path = shared_bin_dir.join(&binary_name);
+    for (binary_name, source_path) in &sidecars {
+      let shared_bin_path = shared_bin_dir.join(binary_name);
+      let bin_path = bin_dir.join(binary_name);
 
-      if dest_path.exists() {
-        log::info!(
-          "Restoring unstripped sidecar: {} (preserves byte-equivalence)",
+      log::info!(
+        "Copying sidecar directly (bypasses sharun): {} -> {}",
+        source_path.display(),
+        shared_bin_path.display()
+      );
+
+      // Copy the original sidecar to shared/bin/
+      fs::copy(source_path, &shared_bin_path).with_context(|| {
+        format!(
+          "Failed to copy sidecar binary '{}' to shared/bin",
           binary_name
-        );
+        )
+      })?;
 
-        fs::copy(&source_path, &dest_path).with_context(|| {
-          format!(
-            "Failed to restore unstripped sidecar binary '{}'",
-            binary_name
-          )
-        })?;
-
-        // Ensure the restored binary is executable
-        #[cfg(unix)]
-        {
-          use std::os::unix::fs::PermissionsExt;
-          let mut perms = fs::metadata(&dest_path)?.permissions();
-          perms.set_mode(0o755);
-          fs::set_permissions(&dest_path, perms)?;
-        }
-      } else {
-        log::warn!(
-          "Sidecar binary '{}' not found at expected location after sharun processing: {}",
-          binary_name,
-          dest_path.display()
-        );
+      // Ensure the binary is executable
+      #[cfg(unix)]
+      {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&shared_bin_path)?.permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&shared_bin_path, perms)?;
       }
+
+      // Create hardlink in bin/ pointing to the sidecar in shared/bin/
+      // This allows the sidecar to be found via PATH while executing natively
+      if bin_path.exists() {
+        fs::remove_file(&bin_path)?;
+      }
+      fs::hard_link(&shared_bin_path, &bin_path).with_context(|| {
+        format!(
+          "Failed to create hardlink for sidecar '{}' in bin/",
+          binary_name
+        )
+      })?;
+
+      log::info!(
+        "Created hardlink for sidecar: {} -> {}",
+        bin_path.display(),
+        shared_bin_path.display()
+      );
     }
   }
 
