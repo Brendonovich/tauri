@@ -170,15 +170,13 @@ pub fn bundle_project(settings: &Settings) -> crate::Result<Vec<PathBuf>> {
   }
 
   if !sidecars_to_preserve.is_empty() {
-    log::info!(
-      "Will preserve {} unstripped sidecar(s): {}",
-      sidecars_to_preserve.len(),
-      sidecars_to_preserve
-        .keys()
-        .map(|s| s.as_str())
-        .collect::<Vec<_>>()
-        .join(", ")
-    );
+    for (name, path) in &sidecars_to_preserve {
+      log::info!(
+        "Will preserve unstripped sidecar: {} (source: {})",
+        name,
+        path.display()
+      );
+    }
   }
 
   let bins = settings.copy_binaries(&app_dir_path.join("usr/bin/"))?;
@@ -228,6 +226,8 @@ pub fn bundle_project(settings: &Settings) -> crate::Result<Vec<PathBuf>> {
   if !sidecars_to_preserve.is_empty() {
     let bin_dir = app_dir_path.join("bin");
 
+    log::info!("Looking for stripped sidecars in: {}", bin_dir.display());
+
     for (binary_name, source_path) in sidecars_to_preserve {
       let dest_path = bin_dir.join(&binary_name);
 
@@ -243,6 +243,15 @@ pub fn bundle_project(settings: &Settings) -> crate::Result<Vec<PathBuf>> {
             binary_name
           )
         })?;
+
+        // Ensure the restored binary is executable
+        #[cfg(unix)]
+        {
+          use std::os::unix::fs::PermissionsExt;
+          let mut perms = fs::metadata(&dest_path)?.permissions();
+          perms.set_mode(0o755);
+          fs::set_permissions(&dest_path, perms)?;
+        }
       } else {
         log::warn!(
           "Sidecar binary '{}' not found at expected location after sharun processing: {}",
@@ -256,6 +265,15 @@ pub fn bundle_project(settings: &Settings) -> crate::Result<Vec<PathBuf>> {
   fs_utils::remove_dir_all(&app_dir_path.join("usr/"))?;
 
   let sharun = app_dir_path.join("sharun");
+
+  // Verify sharun binary exists before trying to use it
+  if !sharun.exists() {
+    return Err(crate::Error::GenericError(format!(
+      "sharun binary not found at expected location: {}. This may indicate the lib4bin command did not complete successfully.",
+      sharun.display()
+    )));
+  }
+
   fs::copy(&sharun, app_dir_path.join("AppRun"))?;
 
   Command::new(sharun)
