@@ -181,12 +181,6 @@ pub fn bundle_project(settings: &Settings) -> crate::Result<Vec<PathBuf>> {
     }
   }
 
-  let bins = settings.copy_binaries(&app_dir_path.join("usr/bin/"))?;
-  let bins = bins
-    .iter()
-    .map(|b| format!(" \"{}\"", b.to_string_lossy()))
-    .collect::<String>();
-
   // Don't copy sidecars to usr/bin - they'll be added directly to shared/bin later
   // to bypass sharun's userland-execve which doesn't preserve appended ELF data
 
@@ -198,12 +192,14 @@ pub fn bundle_project(settings: &Settings) -> crate::Result<Vec<PathBuf>> {
   };
 
   // TODO: Check if we can make parts of the opengl (incl. libvulkan) deps optional
+  // Note: Only the main binary is passed to lib4bin. Sidecars bypass sharun entirely
+  // to preserve appended ELF data (sharun's userland-execve doesn't support this).
   Command::new("/bin/sh")
     .current_dir(&app_dir_path)
     .args([
       "-c",
       &format!(
-        r#"{}"{}" l -p {verbosity} -e -s -k "{}" {} \
+        r#"{}"{}" l -p {verbosity} -e -s -k "{}" \
 /usr/lib/{tools_arch}-linux-gnu/libwebkit2gtk-4.1* \{gst}
 /usr/lib/{tools_arch}-linux-gnu/gdk-pixbuf-*/*/*/* \
 /usr/lib/{tools_arch}-linux-gnu/gio/modules/* \
@@ -219,7 +215,6 @@ pub fn bundle_project(settings: &Settings) -> crate::Result<Vec<PathBuf>> {
         &app_dir_path
           .join(format!("usr/bin/{}", main_binary.name()))
           .to_string_lossy(),
-        bins
       ),
     ])
     .output_ok()
