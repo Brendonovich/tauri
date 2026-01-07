@@ -201,7 +201,6 @@ pub fn bundle_project(settings: &Settings) -> crate::Result<Vec<PathBuf>> {
       &format!(
         r#"{}"{}" l -p {verbosity} -e -s -k "{}" \
 /usr/lib/{tools_arch}-linux-gnu/libwebkit2gtk-4.1* \{gst}
-/usr/lib/{tools_arch}-linux-gnu/gdk-pixbuf-*/*/*/* \
 /usr/lib/{tools_arch}-linux-gnu/gio/modules/* \
 /usr/lib/{tools_arch}-linux-gnu/libnss*.so* \
 /usr/lib/{tools_arch}-linux-gnu/libGL* \
