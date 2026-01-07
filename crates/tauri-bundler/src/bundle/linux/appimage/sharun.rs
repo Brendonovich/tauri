@@ -220,6 +220,18 @@ pub fn bundle_project(settings: &Settings) -> crate::Result<Vec<PathBuf>> {
     .output_ok()
     .context("lib4bin command failed to run.")?;
 
+  fs_utils::remove_dir_all(&app_dir_path.join("usr/"))?;
+
+  let sharun = app_dir_path.join("sharun");
+
+  fs::copy(&sharun, app_dir_path.join("AppRun"))?;
+
+  Command::new(sharun)
+    .current_dir(&app_dir_path)
+    .arg("-g")
+    .output_ok()
+    .context("Failed to generate library path for AppDir.")?;
+
   // Sharun has completed processing with stripping enabled
   // Restore original unstripped versions of all sidecar binaries to preserve byte-equivalence
   // (Main binary stays stripped since it's a standard Rust executable)
@@ -261,26 +273,6 @@ pub fn bundle_project(settings: &Settings) -> crate::Result<Vec<PathBuf>> {
       }
     }
   }
-
-  fs_utils::remove_dir_all(&app_dir_path.join("usr/"))?;
-
-  let sharun = app_dir_path.join("sharun");
-
-  // Verify sharun binary exists before trying to use it
-  if !sharun.exists() {
-    return Err(crate::Error::GenericError(format!(
-      "sharun binary not found at expected location: {}. This may indicate the lib4bin command did not complete successfully.",
-      sharun.display()
-    )));
-  }
-
-  fs::copy(&sharun, app_dir_path.join("AppRun"))?;
-
-  Command::new(sharun)
-    .current_dir(&app_dir_path)
-    .arg("-g")
-    .output_ok()
-    .context("Failed to generate library path for AppDir.")?;
 
   if let Some(upinfo) = upinfo.as_deref() {
     Command::new(&uruntime_lite)
