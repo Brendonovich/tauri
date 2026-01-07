@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: MIT
 
 use std::{
+  collections::HashMap,
   fs,
   path::{Path, PathBuf},
   process::Command,
@@ -150,6 +151,36 @@ pub fn bundle_project(settings: &Settings) -> crate::Result<Vec<PathBuf>> {
     "".to_string()
   };
 
+  // Build map of all sidecar binaries to preserve unstripped
+  // This ensures byte-equivalence for binaries with appended data (e.g., Bun-compiled executables)
+  // Key: binary_name, Value: original_source_path
+  let mut sidecars_to_preserve: HashMap<String, PathBuf> = HashMap::new();
+
+  for src in settings.external_binaries() {
+    let src = src?;
+    let src_filename = src
+      .file_name()
+      .expect("failed to extract external binary filename")
+      .to_string_lossy();
+
+    // Remove target triple suffix (same logic as copy_binaries)
+    let binary_name = src_filename.replace(&format!("-{}", settings.target()), "");
+
+    sidecars_to_preserve.insert(binary_name.clone(), src.to_path_buf());
+  }
+
+  if !sidecars_to_preserve.is_empty() {
+    log::info!(
+      "Will preserve {} unstripped sidecar(s): {}",
+      sidecars_to_preserve.len(),
+      sidecars_to_preserve
+        .keys()
+        .map(|s| s.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
+    );
+  }
+
   let bins = settings.copy_binaries(&app_dir_path.join("usr/bin/"))?;
   let bins = bins
     .iter()
@@ -190,6 +221,37 @@ pub fn bundle_project(settings: &Settings) -> crate::Result<Vec<PathBuf>> {
     ])
     .output_ok()
     .context("lib4bin command failed to run.")?;
+
+  // Sharun has completed processing with stripping enabled
+  // Restore original unstripped versions of all sidecar binaries to preserve byte-equivalence
+  // (Main binary stays stripped since it's a standard Rust executable)
+  if !sidecars_to_preserve.is_empty() {
+    let bin_dir = app_dir_path.join("bin");
+
+    for (binary_name, source_path) in sidecars_to_preserve {
+      let dest_path = bin_dir.join(&binary_name);
+
+      if dest_path.exists() {
+        log::info!(
+          "Restoring unstripped sidecar: {} (preserves byte-equivalence)",
+          binary_name
+        );
+
+        fs::copy(&source_path, &dest_path).with_context(|| {
+          format!(
+            "Failed to restore unstripped sidecar binary '{}'",
+            binary_name
+          )
+        })?;
+      } else {
+        log::warn!(
+          "Sidecar binary '{}' not found at expected location after sharun processing: {}",
+          binary_name,
+          dest_path.display()
+        );
+      }
+    }
+  }
 
   fs_utils::remove_dir_all(&app_dir_path.join("usr/"))?;
 
